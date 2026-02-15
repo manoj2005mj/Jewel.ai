@@ -1,0 +1,6 @@
+downloaded_images/
+jewelbox (1).csv
+.vscode/
+.venv/
+__pycache__/
+*.pyc
