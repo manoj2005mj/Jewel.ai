@@ -4,3 +4,8 @@ jewelbox (1).csv
 .venv/
 __pycache__/
 *.pyc
+bluestone.csv
+downloaded_images_bluestone/
+screenshotfrom2026-02-1422-40-27.png    
+debug_masks/
+Images/
