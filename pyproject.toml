@@ -14,4 +14,6 @@ dependencies = [
     "opencv-python>=4.13.0.92",
     "numpy>=2.4.2",
     "pillow>=12.1.1",
+    "google-genai>=1.63.0",
+    "dotenv>=0.9.9",
 ]

@@ -9,3 +9,8 @@ downloaded_images_bluestone/
 screenshotfrom2026-02-1422-40-27.png    
 debug_masks/
 Images/
+.env
+output_images/
+Intialtest/
+output_jewels/
+bluestone.csv
