@@ -14,8 +14,7 @@ REFERENCE_GIRL_IMAGE = "reference.jpeg"
 
 dotenv.load_dotenv()
 API_KEY = os.environ.get("GOOGLE_API_KEY")
-if not API_KEY:
-    API_KEY = "AIzaSyCMHHecQE9SFW1gnZCFFvqv-3F04rRLNjQ"
+
 
 MODEL_NAME = "gemini-3-pro-image-preview"
 
