@@ -1,10 +1,9 @@
 downloaded_images/
-jewelbox (1).csv
 .vscode/
 .venv/
 __pycache__/
 *.pyc
-bluestone.csv
+
 downloaded_images_bluestone/
 screenshotfrom2026-02-1422-40-27.png    
 debug_masks/
@@ -13,7 +12,7 @@ Images/
 output_images/
 Intialtest/
 output_jewels/
-bluestone.csv
+
 comparison/
 FastSAM-s.pt
 FastSAM-x.pt

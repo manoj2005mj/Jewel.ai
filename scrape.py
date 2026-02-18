@@ -14,7 +14,7 @@ URLS = [
     "https://jewelbox.co.in/briget-ribbon-knot-diamond-earrings/"
     # Add more URLs here
 ]
-DOWNLOAD_ROOT = "downloaded_images"
+DOWNLOAD_ROOT = os.path.join(os.path.dirname(__file__), "downloaded_images")
 
 def sanitize_filename(name):
     """Clean string for use as a folder or filename."""

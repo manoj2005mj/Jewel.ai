@@ -11,8 +11,8 @@ import json
 import re
 
 # Configuration
-CSV_FILE = "bluestone.csv"
-DOWNLOAD_ROOT = "downloaded_images_bluestone"
+CSV_FILE = os.path.join(os.path.dirname(__file__), "bluestone.csv")
+DOWNLOAD_ROOT = os.path.join(os.path.dirname(__file__), "downloaded_images_bluestone")
 MAX_LINKS = 100  # Process first 100 links
 
 def upgrade_url_quality(url):

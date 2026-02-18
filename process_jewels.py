@@ -8,11 +8,12 @@ from google.genai import types
 import dotenv
 
 # --- Configuration ---
-INPUT_DIR = "Intialtest"
-OUTPUT_DIR = "output_jewels"
-REFERENCE_GIRL_IMAGE = "reference.jpeg"
+base_dir = os.path.dirname(os.path.abspath(__file__))
+INPUT_DIR = os.path.join(base_dir, "Intialtest")
+OUTPUT_DIR = os.path.join(base_dir, "output_jewels")
+REFERENCE_GIRL_IMAGE = os.path.join(base_dir, "reference.jpeg")
 
-dotenv.load_dotenv()
+dotenv.load_dotenv(os.path.join(base_dir, ".env"))
 API_KEY = os.environ.get("GOOGLE_API_KEY")
 
 
@@ -62,20 +63,31 @@ def process_folder(folder_path, client, output_base):
     )
 
     # Build contents: prompt + girl image + jewelry images
+    # Google GenAI "contents" list supports mixed types: strings and PIL.Image
     contents = [prompt_text]
     opened_images = []
 
     # Girl reference
     girl_img_path = os.path.abspath(REFERENCE_GIRL_IMAGE)
+    if not os.path.exists(girl_img_path):
+        print(f"  Error: Reference image not found at {girl_img_path}")
+        return
+
     girl_img = Image.open(girl_img_path)
     opened_images.append(girl_img)
-    contents.append(girl_img)
+    # The SDK supports PIL images in this list despite static analysis complaints
+    contents.append(girl_img) # type: ignore
 
     # Jewelry references
     for ref_name in ref_filenames:
-        img = Image.open(os.path.join(folder_path, ref_name))
-        opened_images.append(img)
-        contents.append(img)
+        img_path = os.path.join(folder_path, ref_name)
+        if os.path.exists(img_path):
+            img = Image.open(img_path)
+            opened_images.append(img)
+            # Type ignore for linting tools that don't know the SDK supports PIL
+            contents.append(img) # type: ignore
+        else:
+             print(f"  Warning: skipping missing image {ref_name}")
 
     print(f"  Sending: 1 girl + {len(ref_filenames)} jewelry refs")
 

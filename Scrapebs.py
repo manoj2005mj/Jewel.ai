@@ -15,7 +15,7 @@ URLS = [
     "https://www.bluestone.com/earrings/the-elif-multi-pierced-stud-earrings~77272.html?impEvent=browseclick&posEvent=3&sortbyEvent=mostpopular&tagEvent="
     # Add more URLs here
 ]
-DOWNLOAD_ROOT = "downloaded_bluestone"
+DOWNLOAD_ROOT = os.path.join(os.path.dirname(__file__), "downloaded_bluestone")
 
 def upgrade_url_quality(url):
     """

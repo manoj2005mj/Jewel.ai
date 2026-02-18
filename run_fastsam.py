@@ -28,14 +28,47 @@ import clip
 # ==========================================
 #   USER CONFIGURATION
 # ==========================================
-IMG_PATH = "/home/victus/Desktop/Scrape/comparison/The_Vivaciously_Designed_Huggie_Earrings/gt.png"
-OUTPUT_PATH = "/home/victus/Desktop/Scrape/output_result.jpg"
-MODEL_PATH = "/home/victus/Desktop/Scrape/FastSAM-x.pt"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    
+# Check if running in a headless environment, otherwise default to relative path
+IMG_PATH = os.path.join(BASE_DIR, "comparison/The_Vivaciously_Designed_Huggie_Earrings/gt.png")
+OUTPUT_PATH = os.path.join(BASE_DIR, "output_result.jpg") 
 
-TARGET_PROMPT = "metal"  # The object you want to segment (e.g., "a jewel", "an earring")
+# Improved Model Path Discovery for Portability
+candidates = [
+    os.path.join(BASE_DIR, "FastSAM-x.pt"),
+    os.path.join(BASE_DIR, "../FastSAM-x.pt"),
+    os.path.join(BASE_DIR, "FastSAM/FastSAM-x.pt"),
+]
+MODEL_PATH = "FastSAM-x.pt" 
+for c in candidates:
+    if os.path.exists(c):
+        MODEL_PATH = c
+        break
+
+if MODEL_PATH is None:
+    # Won't be None because we initialized with string above, but safe check
+    print("Warning: FastSAM-x.pt not found. Using default name.")
+    MODEL_PATH = "FastSAM-x.pt"
+
+# Fallback: Find any available GT image in comparison folder if specific one fails
+if not os.path.exists(IMG_PATH):
+    comparison_dir = os.path.join(BASE_DIR, "comparison")
+    found_any = False
+    if os.path.exists(comparison_dir):
+        for root, dirs, files in os.walk(comparison_dir):
+            if "gt.png" in files:
+                IMG_PATH = os.path.join(root, "gt.png")
+                found_any = True
+                print(f"Fallback: Using image found at {IMG_PATH}")
+                break
+    
+    if not found_any:
+        print(f"Warning: Default image not found and no alternatives located in {comparison_dir}")
+
+TARGET_PROMPT = "metal"  # The object you want to segment
 REJECT_CLASSES = ["face", "skin", "hair", "neck", "person"]
 MAX_OBJ_SIZE_RATIO = 0.01
-# ==========================================
 
 def run_smart_segmentation():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -57,6 +90,9 @@ def run_smart_segmentation():
         conf=0.1,
         iou=0.9
     )
+    #STORE THE RESULTS FOR DEBUGGING
+    debug_results = results
+    #PATH TO RESULTS: debug_results
     
     prompt_process = None  # FastSAMPrompt removed (incompatible with ultralytics 8.x)
     if results[0].masks is None:
@@ -79,6 +115,10 @@ def run_smart_segmentation():
     final_masks = []
     
     original_img = cv2.imread(IMG_PATH)
+    if original_img is None:
+        print(f"Error: Could not read image at {IMG_PATH}")
+        return
+
     original_img = cv2.cvtColor(original_img, cv2.COLOR_BGR2RGB)
     h, w, _ = original_img.shape
     total_area = h * w
@@ -103,8 +143,16 @@ def run_smart_segmentation():
         if crop.size == 0: continue
         
         crop_pil = Image.fromarray(crop)
-        image_input = preprocess(crop_pil).unsqueeze(0).to(device)
+        preprocessed_output = preprocess(crop_pil)
         
+        # Official CLIP returns a Tensor.
+        if torch.is_tensor(preprocessed_output):
+            image_input = preprocessed_output.unsqueeze(0).to(device)
+        else:
+            # Should not happen with official CLIP
+            print("Warning: preprocess returned:", type(preprocessed_output))
+            continue
+    
         with torch.no_grad():
             image_features = clip_model.encode_image(image_input)
             image_features /= image_features.norm(dim=-1, keepdim=True)
@@ -127,6 +175,10 @@ def run_smart_segmentation():
         
         # Save mask overlaid on original image
         original_img_bgr = cv2.imread(IMG_PATH)
+        if original_img_bgr is None:
+            print(f"Error: Could not read image at {IMG_PATH} for saving result.")
+            return
+
         mask_colored = cv2.applyColorMap(combined_mask_uint8, cv2.COLORMAP_JET)
         if mask_colored.shape[:2] != original_img_bgr.shape[:2]:
             mask_colored = cv2.resize(mask_colored, (original_img_bgr.shape[1], original_img_bgr.shape[0]))
@@ -137,10 +189,4 @@ def run_smart_segmentation():
         print("No specific earrings found after filtering.")
 
 if __name__ == "__main__":
-    original_load = torch.load
-    torch.load = lambda *args, **kwargs: original_load(*args, **kwargs, weights_only=False) if 'weights_only' not in kwargs else original_load(*args, **kwargs)
-    
-    try:
-        run_smart_segmentation()
-    finally:
-        torch.load = original_load
+    run_smart_segmentation()

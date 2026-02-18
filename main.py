@@ -1,4 +1,3 @@
-
 import csv
 import time
 import random
@@ -6,7 +5,7 @@ import os
 from scrape import scrape_and_download, sanitize_filename, DOWNLOAD_ROOT
 
 # Configuration
-CSV_FILE = "jewelbox (1).csv"
+CSV_FILE = os.path.join(os.path.dirname(__file__), "jewelbox (1).csv")
 MAX_LINKS = 150
 
 def main():
