@@ -20,4 +20,13 @@ dependencies = [
     "lpips>=0.1.4",
     "scipy>=1.17.0",
     "torch-fidelity>=0.4.0",
+    "ultralytics>=8.4.14",
+    "matplotlib>=3.10.8",
+    "gradio>=6.6.0",
 ]
+
+[tool.uv.sources]
+clip = { git = "https://github.com/openai/CLIP.git" }
+
+[tool.uv.extra-build-dependencies]
+clip = ["setuptools"]

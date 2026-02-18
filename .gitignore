@@ -15,3 +15,6 @@ Intialtest/
 output_jewels/
 bluestone.csv
 comparison/
+FastSAM-s.pt
+FastSAM-x.pt
+output_result.jpg

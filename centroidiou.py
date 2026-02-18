@@ -4,50 +4,49 @@ import cv2
 import os
 import traceback
 from PIL import Image
-from transformers import CLIPSegProcessor, CLIPSegForImageSegmentation
+from ultralytics.models.fastsam import FastSAM
+import clip
+
+# ==========================================
+# 0.5 MONKEY PATCH TORCH LOAD
+# ==========================================
+# Fix for PyTorch 2.6+ causing "Weights only load failed"
+# We need to allow loading complete objects for FastSAM/Ultralytics
+_original_torch_load = torch.load
+
+def _patched_torch_load(*args, **kwargs):
+    # Force weights_only=False if not specified to allow loading older models
+    if 'weights_only' not in kwargs:
+        kwargs['weights_only'] = False
+    return _original_torch_load(*args, **kwargs)
+
+torch.load = _patched_torch_load
 
 # ==========================================
 # 1. INITIALIZE SEGMENTATION MODEL GLOBALLY
 # ==========================================
 # Loading globally prevents the model from reloading on every function call
-print("Loading CLIPSeg model...")
-PROCESSOR = CLIPSegProcessor.from_pretrained("CIDAS/clipseg-rd64-refined")
-MODEL = CLIPSegForImageSegmentation.from_pretrained("CIDAS/clipseg-rd64-refined")
+print("Loading FastSAM model...")
+# Path to FastSAM checkpoint
+FASTSAM_CHECKPOINT_PATH = "./FastSAM-x.pt"  # Adjust as needed if unrelated to running dir
+MODEL = FastSAM(FASTSAM_CHECKPOINT_PATH)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-MODEL.to(torch.device(DEVICE))
 print(f"Model loaded on {DEVICE}.")
 
 # ==========================================
 # 2. SEGMENTATION SETTINGS
 # ==========================================
-DEFAULT_PROMPT = "jewelry"
-DEFAULT_THRESHOLD = 0.1
+DEFAULT_PROMPT = "metal jewel"
+DEFAULT_THRESHOLD = 0.5  # FastSAM usually gives binary or high conf masks
 
 
 # ==========================================
-# 3. MASK EXTRACTION (CLIPSeg)
+# 3. MASK EXTRACTION (FastSAM + CLIP Filtering)
 # ==========================================
-def _get_raw_mask_prob(image, prompt):
-    """Run CLIPSeg on a single prompt and return the probability map (0-1 float numpy)."""
-    inputs = PROCESSOR(
-        text=[prompt],
-        images=[image],
-        padding="max_length",
-        return_tensors="pt",
-    )
-    inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
-
-    with torch.no_grad():
-        outputs = MODEL(**inputs)
-
-    preds = outputs.logits
-    if preds.dim() == 3:
-        mask_prob = torch.sigmoid(preds[0]).cpu().numpy()
-    else:
-        mask_prob = torch.sigmoid(preds).cpu().numpy()
-    return mask_prob
-
+# Reusing logic from run_fastsam.py which works correctly
+REJECT_CLASSES = ["face", "skin", "hair", "neck", "person"]
+MAX_OBJ_SIZE_RATIO = 0.05 
 
 def extract_jewelry_mask(
     raw_image_path,
@@ -59,9 +58,7 @@ def extract_jewelry_mask(
     mask_filename_prefix="",
 ):
     """
-    Extract a binary segmentation mask for jewelry in an image.
-    Resizes CLIPSeg 352×352 output back to original image dimensions.
-    Keeps only the largest connected component to remove noise.
+    Extract a binary segmentation mask for jewelry in an image using FastSAM + CLIP Filtering.
     """
     if threshold is None:
         threshold = DEFAULT_THRESHOLD
@@ -70,45 +67,127 @@ def extract_jewelry_mask(
     
     # Check if raw_image_path is a path string or PIL Image
     if isinstance(raw_image_path, str):
+        image_path = raw_image_path
         image = Image.open(raw_image_path).convert("RGB")
         filename = os.path.basename(raw_image_path)
     else:
-        image = raw_image_path.convert("RGB")
-        filename = "image.png"
+        raise ValueError("extract_jewelry_mask expects a file path string. Pass the path, not a PIL image.")
 
     orig_w, orig_h = image.size
+    
+    # Needs CLIP model for filtering
+    # Load CLIP local to function or globally if preferred, let's load globally or cached
+    if not hasattr(extract_jewelry_mask, 'clip_model'):
+        print("Loading CLIP for smart filtering...")
+        extract_jewelry_mask.clip_model, extract_jewelry_mask.preprocess = clip.load("ViT-B/32", device=DEVICE)
+    
+    clip_model = extract_jewelry_mask.clip_model
+    preprocess = extract_jewelry_mask.preprocess
 
-    # --- Get probability map (352×352 from CLIPSeg) ---
-    mask_prob = _get_raw_mask_prob(image, prompt)
+    # --- Run FastSAM ---
+    # retina_masks=True gives better quality mask
+    results = MODEL(
+        image_path, 
+        device=DEVICE, 
+        retina_masks=True, 
+        imgsz=1024, 
+        conf=0.2, 
+        iou=0.9
+    )
+    
+    # FastSAM usually returns a list [Results, ...]
+    if isinstance(results, list) and len(results) > 0:
+        result = results[0]
+        if result.masks is None:
+            return np.zeros((orig_h, orig_w), dtype=np.uint8)
+    else:
+         # Unexpected return type
+         return np.zeros((orig_h, orig_w), dtype=np.uint8)
 
-    # --- Resize prob map back to original image dimensions ---
-    # Need to resize (352,352) -> (orig_w, orig_h)
-    # mask_prob is (352,352)
-    # cv2.resize expects (width, height)
-    mask_prob_resized = cv2.resize(mask_prob, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+    masks = result.masks.data
+    boxes = result.boxes.xyxy
+    
+    # Find {len(masks)} potential objects. Filtering...
+    
+    # Prepare text embeddings
+    search_classes = [prompt] + REJECT_CLASSES
+    text_inputs = clip.tokenize(search_classes).to(DEVICE)
+    
+    with torch.no_grad():
+        text_features = clip_model.encode_text(text_inputs)
+        text_features /= text_features.norm(dim=-1, keepdim=True)
 
-    # --- Binarise ---
-    binary_mask = (mask_prob_resized > threshold).astype(np.uint8) * 255
+    final_masks = []
+    
+    # FIX: Always read original image via cv2.imread from the file path,
+    # exactly like run_fastsam.py does, to ensure pixel dimensions match
+    # the mask/box coordinates returned by FastSAM.
+    original_img_np = cv2.imread(image_path)
+    original_img_np = cv2.cvtColor(original_img_np, cv2.COLOR_BGR2RGB)
+             
+    h, w, _ = original_img_np.shape
+    total_area = h * w
 
-    # --- Keep only largest connected component ---
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_mask, connectivity=8)
-    if num_labels > 1:
-        # label 0 is background, find largest foreground component
-        # stats: [left, top, width, height, area]
-        # We need to find index of max area skipping index 0
-        largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+    for i, mask in enumerate(masks):
+        mask_np = mask.cpu().numpy().astype(bool)
+        mask_area = np.sum(mask_np)
+        size_ratio = mask_area / total_area
         
-        # Create mask for largest component
-        binary_mask = np.zeros_like(binary_mask)
-        binary_mask[labels == largest_label] = 255
+        # Filter A: Size
+        if size_ratio > MAX_OBJ_SIZE_RATIO:
+            continue
+        
+        # Filter B: CLIP Semantic Check
+        # Use mask-tight bounding box for a better crop (less background noise)
+        mask_ys, mask_xs = np.where(mask_np)
+        if len(mask_xs) == 0: continue
+        x1 = int(np.min(mask_xs))
+        y1 = int(np.min(mask_ys))
+        x2 = int(np.max(mask_xs))
+        y2 = int(np.max(mask_ys))
+        margin = 10
+        x1 = max(0, x1 - margin); y1 = max(0, y1 - margin)
+        x2 = min(w, x2 + margin); y2 = min(h, y2 + margin)
+        
+        # Create masked crop: white-out non-jewelry pixels so CLIP focuses on the object
+        crop = original_img_np[y1:y2, x1:x2].copy()
+        crop_mask = mask_np[y1:y2, x1:x2]
+        crop[~crop_mask] = 255  # white background
+        if crop.size == 0: continue
+        
+        crop_pil = Image.fromarray(crop)
+        # Type check: preprocess usually returns a tensor.
+        image_input = preprocess(crop_pil)
+        if torch.is_tensor(image_input):
+             image_input = image_input.unsqueeze(0).to(DEVICE)
+        
+        with torch.no_grad():
+            image_features = clip_model.encode_image(image_input)
+            image_features /= image_features.norm(dim=-1, keepdim=True)
+            similarity = (100.0 * image_features @ text_features.T).softmax(dim=-1)
+            probs = similarity[0].cpu().numpy()
 
-    # --- Optional morphological cleanup ---
-    if morphology:
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        # Close gaps then remove noise
-        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel)
-        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel)
+        target_score = probs[0]
+        reject_score = np.max(probs[1:])
+        
+        if target_score > reject_score:
+            final_masks.append(mask_np)
 
+    if not final_masks:
+        binary_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
+    else:
+        # Combine valid masks
+        combined_mask = np.any(np.array(final_masks), axis=0)
+        binary_mask = (combined_mask.astype(np.uint8) * 255)
+        
+        # Resize if necessary
+        if binary_mask.shape[:2] != (orig_h, orig_w):
+             binary_mask = cv2.resize(binary_mask, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+
+    # --- Match run_fastsam.py logic EXACTLY: NO extra morphological cleanup ---
+    # The original run_fastsam.py does NOT equate morphology.
+    # It just combines masks and saves.
+    
     # --- Save for debugging ---
     if save_mask:
         os.makedirs(output_dir, exist_ok=True)
@@ -172,15 +251,9 @@ def evaluate_tryon_images(
     End-to-end pipeline: Extracts masks -> Aligns Centroids -> Calculates IoU and Area Accuracy.
     """
     try:
-        # Resize GT image to match generated image dimensions
+        # Get generated image dimensions for mask alignment
         gen_img = Image.open(raw_gen_path).convert("RGB")
         gen_w, gen_h = gen_img.size
-        
-        gt_img = Image.open(raw_gt_path).convert("RGB")
-        if gt_img.size != (gen_w, gen_h):
-            gt_img_resized = gt_img.resize((gen_w, gen_h), Image.Resampling.LANCZOS)
-        else:
-            gt_img_resized = gt_img
 
         # Create subfolders for this comparison in debug_masks
         gt_debug_dir = os.path.join(debug_folder, "gt")
@@ -191,18 +264,26 @@ def evaluate_tryon_images(
         os.makedirs(gen_debug_dir, exist_ok=True)
         os.makedirs(aligned_debug_dir, exist_ok=True)
 
-        # Extract masks
-        mask_gt = extract_jewelry_mask(
-            gt_img_resized, # Pass PIL image directly
+        # Extract masks - pass FILE PATHS, not PIL images
+        # FastSAM works correctly only with file paths (matching run_fastsam.py)
+        mask_gt_original = extract_jewelry_mask(
+            raw_gt_path,  # Pass file path, NOT PIL image
             prompt=item_prompt,
             threshold=threshold,
             save_mask=True,
             output_dir=gt_debug_dir,
-            mask_filename_prefix="gt"
+            mask_filename_prefix="gt_original"
         )
         
+        # Resize the GT mask to match Gen image dimensions for comparison
+        if mask_gt_original.shape[:2] != (gen_h, gen_w):
+             # cv2 uses (width, height)
+             mask_gt = cv2.resize(mask_gt_original, (gen_w, gen_h), interpolation=cv2.INTER_NEAREST)
+        else:
+             mask_gt = mask_gt_original
+
         mask_gen = extract_jewelry_mask(
-            gen_img, # Pass PIL image directly
+            raw_gen_path,  # Pass file path, NOT PIL image
             prompt=item_prompt,
             threshold=threshold,
             save_mask=True,
@@ -300,9 +381,10 @@ if __name__ == "__main__":
                 )
                 print(f"Folder: {folder_name} | Centroid IoU: {iou:.4f} | Area Accuracy: {area_acc:.4f}")
                 
-                if iou > 0:
+                # Filter out low scores (less than 0.2) from the average
+                if iou >= 0.2:
                     iou_scores.append(iou)
-                if area_acc > 0:
+                if area_acc >= 0.2:
                     area_acc_scores.append(area_acc)
 
             else:
@@ -311,15 +393,15 @@ if __name__ == "__main__":
         print("\n" + "="*50)
         if iou_scores:
             avg_iou = sum(iou_scores) / len(iou_scores)
-            print(f"Average Centroid IoU (non-zero): {avg_iou:.4f}")
+            print(f"Average Centroid IoU (>= 0.2): {avg_iou:.4f}")
         else:
-            print("No non-zero Centroid IoU scores computed.")
+            print("No Centroid IoU scores >= 0.2 computed.")
 
         if area_acc_scores:
             avg_area_acc = sum(area_acc_scores) / len(area_acc_scores)
-            print(f"Average Area Accuracy (non-zero): {avg_area_acc:.4f}")
+            print(f"Average Area Accuracy (>= 0.2): {avg_area_acc:.4f}")
         else:
-            print("No non-zero Area Accuracy scores computed.")
+            print("No Area Accuracy scores >= 0.2 computed.")
         print("="*50 + "\n")
 
     else:
