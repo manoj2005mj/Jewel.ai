@@ -16,4 +16,8 @@ dependencies = [
     "pillow>=12.1.1",
     "google-genai>=1.63.0",
     "dotenv>=0.9.9",
+    "torchmetrics>=1.8.2",
+    "lpips>=0.1.4",
+    "scipy>=1.17.0",
+    "torch-fidelity>=0.4.0",
 ]
