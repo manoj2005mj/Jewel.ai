@@ -23,6 +23,9 @@ dependencies = [
     "ultralytics>=8.4.14",
     "matplotlib>=3.10.8",
     "gradio>=6.6.0",
+    "zhipuai>=2.0.0",
+    "rembg[cpu]>=2.0.60",
+    "mediapipe>=0.10.0",
 ]
 
 [tool.uv.sources]
